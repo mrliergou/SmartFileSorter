@@ -45,7 +45,8 @@ DEFAULT_CONFIG: Dict = {
         {'pattern': '试卷|卷子', 'target': '试卷'},
         {'pattern': '练习|作业', 'target': '练习'}
     ],
-    'copy_mode': False
+    'copy_mode': False,
+    'auto_use_first_rule': True  # 多规则匹配时自动使用第一条规则
 }
 
 def load_config() -> Dict:
@@ -55,7 +56,7 @@ def load_config() -> Dict:
         with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
             data = json.load(f)
         cfg = DEFAULT_CONFIG.copy()
-        for k in ['keywords', 'exts', 'recursive', 'copy_mode']:
+        for k in ['keywords', 'exts', 'recursive', 'copy_mode', 'auto_use_first_rule']:
             if k in data:
                 cfg[k] = data[k]
         routes = data.get('routes', None)
@@ -184,6 +185,120 @@ def suggest_rules_from_folder(folder: str, top_n: int = 20) -> List[Tuple[str, i
     cnt = Counter(tokens)
     return cnt.most_common(top_n)
 
+# -------------------- 建议规则窗口 --------------------
+class SuggestionWindow(ctk.CTkToplevel):
+    def __init__(self, parent, cfg, suggestions):
+        super().__init__(parent)
+        self.cfg = cfg
+        self.parent_window = parent
+        self.suggestions = suggestions
+        self.title("智能规则建议")
+        self.geometry("700x600")
+
+        # 说明标签
+        info_label = ctk.CTkLabel(self, text="📊 根据文件名分析，以下是出现频率最高的关键词",
+                                 font=("微软雅黑", 14, "bold"))
+        info_label.pack(padx=20, pady=15)
+
+        # 创建滚动框架
+        scroll_frame = ctk.CTkScrollableFrame(self, width=650, height=400)
+        scroll_frame.pack(padx=20, pady=10, fill="both", expand=True)
+
+        self.selected_items = []
+        self.checkboxes = []
+
+        # 创建可选择的关键词列表
+        for keyword, count in suggestions:
+            item_frame = ctk.CTkFrame(scroll_frame)
+            item_frame.pack(fill="x", padx=5, pady=3)
+
+            var = ctk.BooleanVar()
+            checkbox = ctk.CTkCheckBox(item_frame, text="", variable=var, width=30)
+            checkbox.pack(side="left", padx=5)
+
+            # 关键词标签（可复制）
+            keyword_label = ctk.CTkLabel(item_frame, text=f"{keyword}",
+                                        font=("微软雅黑", 12, "bold"),
+                                        width=200, anchor="w")
+            keyword_label.pack(side="left", padx=5)
+
+            # 频率标签
+            count_label = ctk.CTkLabel(item_frame, text=f"出现 {count} 次",
+                                      text_color="gray", width=100)
+            count_label.pack(side="left", padx=5)
+
+            # 快速添加按钮
+            add_btn = ctk.CTkButton(item_frame, text="快速添加", width=100,
+                                   command=lambda k=keyword: self.quick_add_rule(k),
+                                   fg_color="#2ecc71", hover_color="#27ae60")
+            add_btn.pack(side="right", padx=5)
+
+            self.checkboxes.append((var, keyword))
+
+        # 底部按钮
+        btn_frame = ctk.CTkFrame(self)
+        btn_frame.pack(padx=20, pady=15, fill="x")
+
+        ctk.CTkButton(btn_frame, text="批量添加选中项", command=self.batch_add_rules,
+                     width=150, height=35, fg_color="#3498db", hover_color="#2980b9",
+                     font=("微软雅黑", 12, "bold")).pack(side="left", padx=5)
+
+        ctk.CTkButton(btn_frame, text="全选", command=self.select_all,
+                     width=80, height=35).pack(side="left", padx=5)
+
+        ctk.CTkButton(btn_frame, text="取消全选", command=self.deselect_all,
+                     width=80, height=35).pack(side="left", padx=5)
+
+        ctk.CTkButton(btn_frame, text="关闭", command=self.destroy,
+                     width=80, height=35, fg_color="#95a5a6", hover_color="#7f8c8d").pack(side="right", padx=5)
+
+    def quick_add_rule(self, keyword):
+        """快速添加单个规则"""
+        target = simpledialog.askstring("目标文件夹",
+                                       f"为关键词 '{keyword}' 指定目标子文件夹:\n(留空则使用关键词作为文件夹名)")
+        if target is None:  # 用户取消
+            return
+        if not target.strip():
+            target = keyword
+
+        self.cfg['routes'].append({'pattern': keyword, 'target': target.strip()})
+        save_config(self.cfg)
+
+        if hasattr(self.parent_window, 'refresh_list'):
+            self.parent_window.refresh_list()
+
+        messagebox.showinfo("成功", f"已添加规则: {keyword} -> {target}")
+
+    def batch_add_rules(self):
+        """批量添加选中的规则"""
+        selected = [(keyword, var.get()) for var, keyword in self.checkboxes if var.get()]
+
+        if not selected:
+            messagebox.showwarning("提示", "请至少选择一个关键词")
+            return
+
+        added_count = 0
+        for keyword, _ in selected:
+            # 默认使用关键词作为目标文件夹名
+            self.cfg['routes'].append({'pattern': keyword, 'target': keyword})
+            added_count += 1
+
+        save_config(self.cfg)
+
+        if hasattr(self.parent_window, 'refresh_list'):
+            self.parent_window.refresh_list()
+
+        messagebox.showinfo("成功", f"已批量添加 {added_count} 条规则")
+        self.destroy()
+
+    def select_all(self):
+        for var, _ in self.checkboxes:
+            var.set(True)
+
+    def deselect_all(self):
+        for var, _ in self.checkboxes:
+            var.set(False)
+
 # -------------------- 规则管理器窗口 --------------------
 class RuleManagerWindow(ctk.CTkToplevel):
     def __init__(self, parent, cfg):
@@ -285,17 +400,12 @@ class RuleManagerWindow(ctk.CTkToplevel):
         folder = filedialog.askdirectory(title='选择要分析的文件夹')
         if folder:
             top = suggest_rules_from_folder(folder, top_n=30)
-            suggestions = '\n'.join([f"{k} ({c}次)" for k, c in top[:20]])
+            if not top:
+                messagebox.showinfo("提示", "未找到可建议的关键词")
+                return
 
-            result = simpledialog.askstring("建议规则",
-                f"出现频率高的词:\n{suggestions}\n\n请输入要采纳的关键词:")
-            if result:
-                target = simpledialog.askstring("目标文件夹", "请输入目标子文件夹名称:")
-                if target:
-                    self.cfg['routes'].append({'pattern': result.strip(), 'target': target.strip()})
-                    save_config(self.cfg)
-                    self.refresh_list()
-                    messagebox.showinfo("成功", "规则已添加")
+            # 创建建议窗口
+            SuggestionWindow(self, self.cfg, top)
 
 # -------------------- 主应用窗口 --------------------
 class FileManagerApp(ctk.CTk):
@@ -347,6 +457,10 @@ class FileManagerApp(ctk.CTk):
 
         self.copy_mode_var = ctk.BooleanVar(value=self.cfg.get('copy_mode', False))
         ctk.CTkCheckBox(options_frame, text="复制模式", variable=self.copy_mode_var).pack(side="left", padx=10)
+
+        self.auto_rule_var = ctk.BooleanVar(value=self.cfg.get('auto_use_first_rule', True))
+        ctk.CTkCheckBox(options_frame, text="智能模式(自动使用首个匹配规则)",
+                       variable=self.auto_rule_var).pack(side="left", padx=10)
 
         # 关键词输入
         kw_frame = ctk.CTkFrame(main_frame)
@@ -461,53 +575,107 @@ class FileManagerApp(ctk.CTk):
             return
 
         copy_mode = self.copy_mode_var.get()
+        auto_use_first = self.auto_rule_var.get()
         self.cfg['copy_mode'] = copy_mode
+        self.cfg['auto_use_first_rule'] = auto_use_first
         save_config(self.cfg)
 
-        moved = 0
+        # 智能分组：将文件按匹配情况分组
+        no_match_files = []  # 无匹配规则的文件
+        single_match_files = []  # 单一匹配的文件
+        multi_match_files = []  # 多规则匹配的文件
+
         for f in self.matched_files:
             fn = os.path.basename(f)
             matches = match_routes_for_name(fn, self.cfg.get('routes', []))
-            chosen_target = None
 
             if not matches:
-                chosen_target = base
+                no_match_files.append((f, base))
             elif len(matches) == 1:
-                chosen_target = matches[0][1]
+                single_match_files.append((f, matches[0][1]))
             else:
-                opts = [m[1] for m in matches]
-                prompt = '检测到多个规则匹配:\n' + '\n'.join([f"{i+1}) {o}" for i, o in enumerate(opts)]) + '\n\n请输入序号(默认1)或留空跳过:'
-                choice = simpledialog.askstring('选择规则', prompt)
-                if not choice:
-                    self.log(f'跳过: {fn} (未选择规则)')
-                    continue
-                try:
-                    idx = int(choice.strip()) - 1
-                    if 0 <= idx < len(opts):
-                        chosen_target = opts[idx]
-                    else:
-                        self.log(f'无效序号，跳过: {fn}')
-                        continue
-                except:
-                    self.log(f'解析选择失败，跳过: {fn}')
-                    continue
+                multi_match_files.append((f, matches))
 
-            dest = chosen_target if os.path.isabs(chosen_target) else os.path.join(base, chosen_target)
+        # 显示处理预览
+        total = len(self.matched_files)
+        self.log(f'\n📊 文件分析完成:')
+        self.log(f'  - 总文件数: {total}')
+        self.log(f'  - 无匹配规则: {len(no_match_files)} 个 (将移至根目录)')
+        self.log(f'  - 单一匹配: {len(single_match_files)} 个')
+        self.log(f'  - 多规则匹配: {len(multi_match_files)} 个')
+
+        # 处理多规则匹配的文件
+        if multi_match_files:
+            if auto_use_first:
+                self.log(f'\n🤖 智能模式: 多规则匹配文件将自动使用第一条匹配规则')
+                for f, matches in multi_match_files:
+                    single_match_files.append((f, matches[0][1]))
+            else:
+                # 批量处理模式：一次性展示所有冲突
+                self.log(f'\n⚠️ 检测到 {len(multi_match_files)} 个文件有多个匹配规则')
+                result = messagebox.askyesnocancel(
+                    "多规则匹配处理",
+                    f"检测到 {len(multi_match_files)} 个文件匹配多条规则\n\n"
+                    f"• 点击【是】: 全部使用第一条匹配规则\n"
+                    f"• 点击【否】: 跳过这些文件\n"
+                    f"• 点击【取消】: 中止操作"
+                )
+
+                if result is None:  # 取消
+                    self.log('❌ 操作已取消')
+                    return
+                elif result:  # 是 - 使用第一条规则
+                    for f, matches in multi_match_files:
+                        single_match_files.append((f, matches[0][1]))
+                    self.log('✓ 多规则文件将使用第一条匹配规则')
+                else:  # 否 - 跳过
+                    self.log(f'⊘ 已跳过 {len(multi_match_files)} 个多规则匹配文件')
+
+        # 确认执行
+        action_text = "复制" if copy_mode else "移动"
+        confirm = messagebox.askyesno(
+            "确认执行",
+            f"准备{action_text} {len(no_match_files) + len(single_match_files)} 个文件\n\n"
+            f"是否继续？"
+        )
+
+        if not confirm:
+            self.log('❌ 操作已取消')
+            return
+
+        # 执行文件处理
+        self.log(f'\n🚀 开始{action_text}文件...')
+        moved = 0
+        failed = 0
+
+        all_files_to_process = no_match_files + single_match_files
+
+        for f, target in all_files_to_process:
+            fn = os.path.basename(f)
+            dest = target if os.path.isabs(target) else os.path.join(base, target)
             os.makedirs(dest, exist_ok=True)
 
             try:
                 if copy_mode:
                     new = safe_copy(f, dest)
-                    self.log(f'已复制: {fn} -> {dest}')
+                    self.log(f'✓ 已复制: {fn} -> {os.path.basename(dest)}/')
                 else:
                     new = safe_move(f, dest)
-                    self.log(f'已移动: {fn} -> {dest}')
+                    self.log(f'✓ 已移动: {fn} -> {os.path.basename(dest)}/')
                 moved += 1
             except Exception as e:
-                self.log(f'处理失败: {fn} -> {str(e)}')
+                self.log(f'✗ 失败: {fn} -> {str(e)}')
+                failed += 1
 
-        self.log(f'\n完成: 共处理 {moved} 个文件')
-        messagebox.showinfo("完成", f"成功处理 {moved} 个文件")
+        # 完成总结
+        self.log(f'\n{"="*50}')
+        self.log(f'🎉 处理完成!')
+        self.log(f'  ✓ 成功: {moved} 个文件')
+        if failed > 0:
+            self.log(f'  ✗ 失败: {failed} 个文件')
+        self.log(f'{"="*50}\n')
+
+        messagebox.showinfo("完成", f"成功处理 {moved} 个文件" + (f"\n失败 {failed} 个" if failed > 0 else ""))
 
     def log(self, msg: str):
         self.log_textbox.insert("end", msg + "\n")
