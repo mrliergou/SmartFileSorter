@@ -1,0 +1,30 @@
+{
+  "keywords": [],
+  "exts": [
+    "pdf",
+    "doc",
+    "docx",
+    "txt"
+  ],
+  "recursive": true,
+  "routes": [
+    {
+      "pattern": "试卷|卷子",
+      "target": "试卷"
+    },
+    {
+      "pattern": "练习|作业",
+      "target": "练习"
+    },
+    {
+      "pattern": "政治理论",
+      "target": "政治理论"
+    },
+    {
+      "pattern": "资料分析",
+      "target": "数资"
+    }
+  ],
+  "copy_mode": false,
+  "auto_use_first_rule": true
+}
