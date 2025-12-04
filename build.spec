@@ -27,7 +27,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='文件批量移动器',
+    name='文件批量移动器2.1',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
