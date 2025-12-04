@@ -304,8 +304,9 @@ class RuleManagerWindow(ctk.CTkToplevel):
     def __init__(self, parent, cfg):
         super().__init__(parent)
         self.cfg = cfg
+        self.parent_app = parent
         self.title("规则管理器")
-        self.geometry("800x600")
+        self.geometry("900x700")
 
         # 输入框架
         input_frame = ctk.CTkFrame(self)
@@ -324,29 +325,59 @@ class RuleManagerWindow(ctk.CTkToplevel):
         btn_frame.pack(padx=20, pady=10, fill="x")
 
         ctk.CTkButton(btn_frame, text="添加规则", command=self.add_rule, fg_color="#2ecc71", hover_color="#27ae60").pack(side="left", padx=5)
-        ctk.CTkButton(btn_frame, text="删除规则", command=self.delete_rule, fg_color="#e74c3c", hover_color="#c0392b").pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="删除选中", command=self.delete_selected, fg_color="#e74c3c", hover_color="#c0392b").pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="编辑选中", command=self.edit_selected, fg_color="#f39c12", hover_color="#e67e22").pack(side="left", padx=5)
         ctk.CTkButton(btn_frame, text="上移", command=self.move_up, fg_color="#3498db", hover_color="#2980b9").pack(side="left", padx=5)
         ctk.CTkButton(btn_frame, text="下移", command=self.move_down, fg_color="#3498db", hover_color="#2980b9").pack(side="left", padx=5)
+        ctk.CTkButton(btn_frame, text="自动查重", command=self.merge_duplicates, fg_color="#16a085", hover_color="#138d75").pack(side="left", padx=5)
         ctk.CTkButton(btn_frame, text="建议规则", command=self.suggest_rules, fg_color="#9b59b6", hover_color="#8e44ad").pack(side="left", padx=5)
 
-        # 规则列表
+        # 规则列表（使用滚动框架和复选框）
         list_frame = ctk.CTkFrame(self)
         list_frame.pack(padx=20, pady=10, fill="both", expand=True)
 
-        ctk.CTkLabel(list_frame, text="当前规则列表:").pack(anchor="w", padx=5, pady=5)
+        ctk.CTkLabel(list_frame, text="当前规则列表（可多选）:").pack(anchor="w", padx=5, pady=5)
 
-        self.rule_textbox = ctk.CTkTextbox(list_frame, width=700, height=300)
-        self.rule_textbox.pack(padx=5, pady=5, fill="both", expand=True)
+        # 创建滚动框架
+        self.rules_scroll_frame = ctk.CTkScrollableFrame(list_frame, width=850, height=400)
+        self.rules_scroll_frame.pack(padx=5, pady=5, fill="both", expand=True)
 
+        self.rule_checkboxes = []  # 存储 (checkbox_var, index, frame)
         self.refresh_list()
 
         # 关闭按钮
-        ctk.CTkButton(self, text="关闭", command=self.destroy, fg_color="#95a5a6", hover_color="#7f8c8d").pack(pady=10)
+        ctk.CTkButton(self, text="关闭", command=self.on_close, fg_color="#95a5a6", hover_color="#7f8c8d").pack(pady=10)
 
     def refresh_list(self):
-        self.rule_textbox.delete("1.0", "end")
-        for i, r in enumerate(self.cfg['routes'], 1):
-            self.rule_textbox.insert("end", f"{i}. {r['pattern']} -> {r['target']}\n")
+        # 清空现有的复选框
+        for widget in self.rules_scroll_frame.winfo_children():
+            widget.destroy()
+        self.rule_checkboxes.clear()
+
+        # 创建新的复选框列表
+        for i, rule in enumerate(self.cfg['routes']):
+            rule_frame = ctk.CTkFrame(self.rules_scroll_frame)
+            rule_frame.pack(fill="x", padx=5, pady=3)
+
+            var = ctk.BooleanVar()
+            checkbox = ctk.CTkCheckBox(rule_frame, text="", variable=var, width=30)
+            checkbox.pack(side="left", padx=5)
+
+            # 显示规则：pattern -> target
+            pattern_text = rule['pattern'] if rule['pattern'] else "(空)"
+            target_text = rule['target'] if rule['target'] else "(空)"
+
+            rule_label = ctk.CTkLabel(rule_frame,
+                                     text=f"{i+1}. {pattern_text} → {target_text}",
+                                     font=("微软雅黑", 12),
+                                     anchor="w")
+            rule_label.pack(side="left", padx=10, fill="x", expand=True)
+
+            self.rule_checkboxes.append((var, i, rule_frame))
+
+        # 通知主界面刷新
+        if hasattr(self.parent_app, 'refresh_rules_display'):
+            self.parent_app.refresh_rules_display()
 
     def add_rule(self):
         pattern = self.pattern_entry.get().strip()
@@ -359,42 +390,165 @@ class RuleManagerWindow(ctk.CTkToplevel):
             self.target_entry.delete(0, "end")
             messagebox.showinfo("成功", "规则已添加")
 
-    def delete_rule(self):
-        try:
-            selection = self.rule_textbox.get("sel.first", "sel.last").strip()
-            if selection:
-                idx = int(selection.split('.')[0]) - 1
-                if 0 <= idx < len(self.cfg['routes']):
-                    del self.cfg['routes'][idx]
+    def delete_selected(self):
+        """删除选中的规则"""
+        selected_indices = [idx for var, idx, _ in self.rule_checkboxes if var.get()]
+
+        if not selected_indices:
+            messagebox.showwarning("提示", "请至少选择一条规则")
+            return
+
+        # 按索引从大到小排序，避免删除时索引错乱
+        selected_indices.sort(reverse=True)
+
+        for idx in selected_indices:
+            if 0 <= idx < len(self.cfg['routes']):
+                del self.cfg['routes'][idx]
+
+        save_config(self.cfg)
+        self.refresh_list()
+        messagebox.showinfo("成功", f"已删除 {len(selected_indices)} 条规则")
+
+    def edit_selected(self):
+        """编辑选中的规则（只能选一条）"""
+        selected_indices = [idx for var, idx, _ in self.rule_checkboxes if var.get()]
+
+        if len(selected_indices) == 0:
+            messagebox.showwarning("提示", "请选择一条规则进行编辑")
+            return
+
+        if len(selected_indices) > 1:
+            messagebox.showwarning("提示", "一次只能编辑一条规则，请只选择一条")
+            return
+
+        idx = selected_indices[0]
+        if 0 <= idx < len(self.cfg['routes']):
+            rule = self.cfg['routes'][idx]
+
+            # 创建编辑对话框
+            edit_window = ctk.CTkToplevel(self)
+            edit_window.title("编辑规则")
+            edit_window.geometry("500x250")
+            edit_window.transient(self)
+            edit_window.grab_set()
+
+            # Pattern输入
+            ctk.CTkLabel(edit_window, text="关键词（用 | 分隔多个关键词）:",
+                        font=("微软雅黑", 12)).pack(padx=20, pady=(20, 5))
+            pattern_entry = ctk.CTkEntry(edit_window, width=400)
+            pattern_entry.insert(0, rule['pattern'])
+            pattern_entry.pack(padx=20, pady=5)
+
+            # Target输入
+            ctk.CTkLabel(edit_window, text="目标子文件夹:",
+                        font=("微软雅黑", 12)).pack(padx=20, pady=(15, 5))
+            target_entry = ctk.CTkEntry(edit_window, width=400)
+            target_entry.insert(0, rule['target'])
+            target_entry.pack(padx=20, pady=5)
+
+            # 按钮
+            btn_frame = ctk.CTkFrame(edit_window)
+            btn_frame.pack(padx=20, pady=20)
+
+            def save_edit():
+                new_pattern = pattern_entry.get().strip()
+                new_target = target_entry.get().strip()
+
+                if new_pattern and new_target:
+                    self.cfg['routes'][idx] = {'pattern': new_pattern, 'target': new_target}
                     save_config(self.cfg)
                     self.refresh_list()
-                    messagebox.showinfo("成功", "规则已删除")
-        except:
-            messagebox.showwarning("提示", "请先选中要删除的规则")
+                    edit_window.destroy()
+                    messagebox.showinfo("成功", "规则已更新")
+                else:
+                    messagebox.showwarning("提示", "关键词和目标文件夹不能为空")
+
+            ctk.CTkButton(btn_frame, text="保存", command=save_edit,
+                         fg_color="#2ecc71", hover_color="#27ae60", width=100).pack(side="left", padx=10)
+            ctk.CTkButton(btn_frame, text="取消", command=edit_window.destroy,
+                         fg_color="#95a5a6", hover_color="#7f8c8d", width=100).pack(side="left", padx=10)
 
     def move_up(self):
-        try:
-            selection = self.rule_textbox.get("sel.first", "sel.last").strip()
-            if selection:
-                idx = int(selection.split('.')[0]) - 1
-                if idx > 0:
-                    self.cfg['routes'][idx-1], self.cfg['routes'][idx] = self.cfg['routes'][idx], self.cfg['routes'][idx-1]
-                    save_config(self.cfg)
-                    self.refresh_list()
-        except:
-            messagebox.showwarning("提示", "请先选中要移动的规则")
+        """上移选中的规则（只能选一条）"""
+        selected_indices = [idx for var, idx, _ in self.rule_checkboxes if var.get()]
+
+        if len(selected_indices) == 0:
+            messagebox.showwarning("提示", "请选择一条规则")
+            return
+
+        if len(selected_indices) > 1:
+            messagebox.showwarning("提示", "一次只能移动一条规则")
+            return
+
+        idx = selected_indices[0]
+        if idx > 0:
+            self.cfg['routes'][idx-1], self.cfg['routes'][idx] = self.cfg['routes'][idx], self.cfg['routes'][idx-1]
+            save_config(self.cfg)
+            self.refresh_list()
 
     def move_down(self):
-        try:
-            selection = self.rule_textbox.get("sel.first", "sel.last").strip()
-            if selection:
-                idx = int(selection.split('.')[0]) - 1
-                if idx < len(self.cfg['routes']) - 1:
-                    self.cfg['routes'][idx+1], self.cfg['routes'][idx] = self.cfg['routes'][idx], self.cfg['routes'][idx+1]
-                    save_config(self.cfg)
-                    self.refresh_list()
-        except:
-            messagebox.showwarning("提示", "请先选中要移动的规则")
+        """下移选中的规则（只能选一条）"""
+        selected_indices = [idx for var, idx, _ in self.rule_checkboxes if var.get()]
+
+        if len(selected_indices) == 0:
+            messagebox.showwarning("提示", "请选择一条规则")
+            return
+
+        if len(selected_indices) > 1:
+            messagebox.showwarning("提示", "一次只能移动一条规则")
+            return
+
+        idx = selected_indices[0]
+        if idx < len(self.cfg['routes']) - 1:
+            self.cfg['routes'][idx+1], self.cfg['routes'][idx] = self.cfg['routes'][idx], self.cfg['routes'][idx+1]
+            save_config(self.cfg)
+            self.refresh_list()
+
+    def merge_duplicates(self):
+        """自动查重并合并相同目标的规则"""
+        if not self.cfg['routes']:
+            messagebox.showinfo("提示", "没有规则可以合并")
+            return
+
+        # 按target分组
+        target_groups = {}
+        for rule in self.cfg['routes']:
+            target = rule['target']
+            if target not in target_groups:
+                target_groups[target] = []
+            target_groups[target].append(rule['pattern'])
+
+        # 找出有重复的target
+        duplicates = {target: patterns for target, patterns in target_groups.items() if len(patterns) > 1}
+
+        if not duplicates:
+            messagebox.showinfo("提示", "没有发现重复的目标文件夹，无需合并")
+            return
+
+        # 显示合并预览
+        preview_text = "发现以下可合并的规则：\n\n"
+        for target, patterns in duplicates.items():
+            preview_text += f"目标: {target}\n"
+            preview_text += f"  关键词: {', '.join(patterns)}\n"
+            preview_text += f"  → 将合并为: {' | '.join(patterns)}\n\n"
+
+        confirm = messagebox.askyesno("确认合并", preview_text + "是否继续合并？")
+
+        if confirm:
+            # 执行合并
+            new_routes = []
+            processed_targets = set()
+
+            for target, patterns in target_groups.items():
+                if target not in processed_targets:
+                    merged_pattern = ' | '.join(patterns)
+                    new_routes.append({'pattern': merged_pattern, 'target': target})
+                    processed_targets.add(target)
+
+            self.cfg['routes'] = new_routes
+            save_config(self.cfg)
+            self.refresh_list()
+            messagebox.showinfo("成功", f"已合并 {len(duplicates)} 组重复规则")
 
     def suggest_rules(self):
         folder = filedialog.askdirectory(title='选择要分析的文件夹')
@@ -406,6 +560,12 @@ class RuleManagerWindow(ctk.CTkToplevel):
 
             # 创建建议窗口
             SuggestionWindow(self, self.cfg, top)
+
+    def on_close(self):
+        """关闭窗口时通知主界面刷新"""
+        if hasattr(self.parent_app, 'refresh_rules_display'):
+            self.parent_app.refresh_rules_display()
+        self.destroy()
 
 # -------------------- 主应用窗口 --------------------
 class FileManagerApp(ctk.CTk):
@@ -479,6 +639,28 @@ class FileManagerApp(ctk.CTk):
         self.kw_textbox.pack(padx=5, pady=5, fill="x")
         self.refresh_keywords()
 
+        # 规则列表框架（新增）
+        rules_display_frame = ctk.CTkFrame(main_frame)
+        rules_display_frame.pack(padx=10, pady=10, fill="both", expand=True)
+
+        # 规则列表标题和按钮
+        rules_header = ctk.CTkFrame(rules_display_frame)
+        rules_header.pack(fill="x", padx=5, pady=5)
+        ctk.CTkLabel(rules_header, text="当前规则列表（可多选）:", font=("微软雅黑", 12, "bold")).pack(side="left", padx=5)
+
+        # 规则操作按钮
+        ctk.CTkButton(rules_header, text="删除选中", command=self.delete_selected_rules,
+                     width=80, height=28, fg_color="#e74c3c", hover_color="#c0392b").pack(side="right", padx=3)
+        ctk.CTkButton(rules_header, text="编辑选中", command=self.edit_selected_rule,
+                     width=80, height=28, fg_color="#f39c12", hover_color="#e67e22").pack(side="right", padx=3)
+
+        # 规则滚动框架
+        self.rules_scroll_frame = ctk.CTkScrollableFrame(rules_display_frame, width=900, height=150)
+        self.rules_scroll_frame.pack(padx=5, pady=5, fill="both", expand=True)
+
+        self.main_rule_checkboxes = []  # 存储主界面的规则复选框
+        self.refresh_rules_display()
+
         # 操作按钮
         action_frame = ctk.CTkFrame(main_frame)
         action_frame.pack(padx=10, pady=15, fill="x")
@@ -541,6 +723,119 @@ class FileManagerApp(ctk.CTk):
         self.kw_textbox.delete("1.0", "end")
         if self.cfg.get('keywords'):
             self.kw_textbox.insert("1.0", ", ".join(self.cfg['keywords']))
+
+    def refresh_rules_display(self):
+        """刷新主界面的规则显示"""
+        # 清空现有的复选框
+        for widget in self.rules_scroll_frame.winfo_children():
+            widget.destroy()
+        self.main_rule_checkboxes.clear()
+
+        # 重新加载配置以确保同步
+        self.cfg = load_config()
+
+        # 创建新的复选框列表
+        for i, rule in enumerate(self.cfg['routes']):
+            rule_frame = ctk.CTkFrame(self.rules_scroll_frame)
+            rule_frame.pack(fill="x", padx=5, pady=3)
+
+            var = ctk.BooleanVar()
+            checkbox = ctk.CTkCheckBox(rule_frame, text="", variable=var, width=30)
+            checkbox.pack(side="left", padx=5)
+
+            # 显示规则：pattern -> target
+            pattern_text = rule['pattern'] if rule['pattern'] else "(空)"
+            target_text = rule['target'] if rule['target'] else "(空)"
+
+            rule_label = ctk.CTkLabel(rule_frame,
+                                     text=f"{i+1}. {pattern_text} → {target_text}",
+                                     font=("微软雅黑", 11),
+                                     anchor="w")
+            rule_label.pack(side="left", padx=10, fill="x", expand=True)
+
+            self.main_rule_checkboxes.append((var, i, rule_frame))
+
+    def delete_selected_rules(self):
+        """删除主界面选中的规则"""
+        selected_indices = [idx for var, idx, _ in self.main_rule_checkboxes if var.get()]
+
+        if not selected_indices:
+            messagebox.showwarning("提示", "请至少选择一条规则")
+            return
+
+        confirm = messagebox.askyesno("确认删除", f"确定要删除选中的 {len(selected_indices)} 条规则吗？")
+        if not confirm:
+            return
+
+        # 按索引从大到小排序，避免删除时索引错乱
+        selected_indices.sort(reverse=True)
+
+        for idx in selected_indices:
+            if 0 <= idx < len(self.cfg['routes']):
+                del self.cfg['routes'][idx]
+
+        save_config(self.cfg)
+        self.refresh_rules_display()
+        messagebox.showinfo("成功", f"已删除 {len(selected_indices)} 条规则")
+
+    def edit_selected_rule(self):
+        """编辑主界面选中的规则（只能选一条）"""
+        selected_indices = [idx for var, idx, _ in self.main_rule_checkboxes if var.get()]
+
+        if len(selected_indices) == 0:
+            messagebox.showwarning("提示", "请选择一条规则进行编辑")
+            return
+
+        if len(selected_indices) > 1:
+            messagebox.showwarning("提示", "一次只能编辑一条规则，请只选择一条")
+            return
+
+        idx = selected_indices[0]
+        if 0 <= idx < len(self.cfg['routes']):
+            rule = self.cfg['routes'][idx]
+
+            # 创建编辑对话框
+            edit_window = ctk.CTkToplevel(self)
+            edit_window.title("编辑规则")
+            edit_window.geometry("500x250")
+            edit_window.transient(self)
+            edit_window.grab_set()
+
+            # Pattern输入
+            ctk.CTkLabel(edit_window, text="关键词（用 | 分隔多个关键词）:",
+                        font=("微软雅黑", 12)).pack(padx=20, pady=(20, 5))
+            pattern_entry = ctk.CTkEntry(edit_window, width=400)
+            pattern_entry.insert(0, rule['pattern'])
+            pattern_entry.pack(padx=20, pady=5)
+
+            # Target输入
+            ctk.CTkLabel(edit_window, text="目标子文件夹:",
+                        font=("微软雅黑", 12)).pack(padx=20, pady=(15, 5))
+            target_entry = ctk.CTkEntry(edit_window, width=400)
+            target_entry.insert(0, rule['target'])
+            target_entry.pack(padx=20, pady=5)
+
+            # 按钮
+            btn_frame = ctk.CTkFrame(edit_window)
+            btn_frame.pack(padx=20, pady=20)
+
+            def save_edit():
+                new_pattern = pattern_entry.get().strip()
+                new_target = target_entry.get().strip()
+
+                if new_pattern and new_target:
+                    self.cfg['routes'][idx] = {'pattern': new_pattern, 'target': new_target}
+                    save_config(self.cfg)
+                    self.refresh_rules_display()
+                    edit_window.destroy()
+                    messagebox.showinfo("成功", "规则已更新")
+                else:
+                    messagebox.showwarning("提示", "关键词和目标文件夹不能为空")
+
+            ctk.CTkButton(btn_frame, text="保存", command=save_edit,
+                         fg_color="#2ecc71", hover_color="#27ae60", width=100).pack(side="left", padx=10)
+            ctk.CTkButton(btn_frame, text="取消", command=edit_window.destroy,
+                         fg_color="#95a5a6", hover_color="#7f8c8d", width=100).pack(side="left", padx=10)
 
     def open_rule_manager(self):
         RuleManagerWindow(self, self.cfg)
